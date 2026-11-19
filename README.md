@@ -27,7 +27,9 @@ year:
 
 ### Before the January 1 run
 
-- Create the `jgamblin/2026CVEBlog` repository on GitHub: the post links to it.
+- Make this repository public, or take the link out. It was created private on
+  2026-11-19, and the post's Methodology section says the pipeline is on GitHub
+  and links here (`REPO` in `period_config.py`), so readers would get a 404.
 - Read the OpenClaw spotlight in `04_generate_blog.py`. It is editorial, carried
   over from the mid-year post, and only its numbers are data-driven.
 - If you want the AI enrichment step, write the 2026 intro into
