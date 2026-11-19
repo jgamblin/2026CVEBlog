@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate 2026 First Half CVE Data Review Blog Post
+Generate the 2026 CVE Data Review Blog Post
 Creates a publishable Markdown blog with all visualizations
 
 This script imports graph generation functions from 03_generate_graphs.py
@@ -21,13 +21,13 @@ from style_config import CWE_NAMES, prettify_name
 from period_config import (
     period_mask,
     same_elapsed_mask,
-    half1_mask,
+    prior_period_mask,
+    window_complete,
     current_asof,
     PERIOD_START,
     PERIOD_DAYS,
     PERIOD_LABEL,
     PERIOD_TITLE,
-    PERIOD_RANGE,
     TARGET_YEAR,
     PRIOR_YEAR,
     HIST_MIN_YEAR,
@@ -36,6 +36,8 @@ from period_config import (
     POST_URL,
     PUBLISH_DATE,
     SERIES_LINE,
+    MIDYEAR_CALL,
+    REPO,
 )
 
 warnings.filterwarnings("ignore")
@@ -205,6 +207,13 @@ _DAY_NAMES = {
 }
 
 
+# Memory-safety weakness classes, for the CWE takeaway.
+MEMORY_SAFETY_CWES = {
+    "CWE-119", "CWE-120", "CWE-121", "CWE-122", "CWE-125", "CWE-190",
+    "CWE-416", "CWE-476", "CWE-787",
+}
+
+
 def _ranked(pairs, n, label=str):
     """'A 1,234, B 567' from (name, count) pairs, top ``n`` only."""
     return ", ".join(f"{label(k)} {int(v):,}" for k, v in list(pairs)[:n])
@@ -244,13 +253,13 @@ def chart_alt_text(
     total = int(stats["total_2025"])
     alt = {
         "01_cves_by_year.png": (
-            f"Bar chart of CVEs published in the first half of each year since "
-            f"{HIST_MIN_YEAR}, with {total:,} in {label}"
+            f"Bar chart of CVEs published each year since {HIST_MIN_YEAR}, "
+            f"with {total:,} in {label}"
         ),
         "02_yoy_growth.png": (
-            f"Bar chart of first-half growth year over year, with {label} "
+            f"Bar chart of growth in published CVEs year over year, with {label} "
             f"{'up' if stats['yoy_change'] >= 0 else 'down'} {abs(stats['yoy_change']):.1f}% "
-            f"on the first half of {PRIOR_YEAR}"
+            f"on {PRIOR_YEAR}"
         ),
         "03_cumulative_growth.png": (
             f"Area chart of the cumulative CVE count since {HIST_MIN_YEAR}, which has "
@@ -274,7 +283,7 @@ def chart_alt_text(
 
     if peak_month and peak_count:
         month = datetime.strptime(peak_month, "%b").strftime("%B")
-        alt["04_h1_monthly.png"] = (
+        alt["04_monthly.png"] = (
             f"Bar chart of CVEs published per month in {label}, peaking in "
             f"{month} at {int(peak_count):,}"
         )
@@ -435,17 +444,17 @@ def calculate_stats(df, cvelist_df, full_nvd_df=None, full_cvelist_df=None):
     """Calculate all statistics for the blog"""
     stats = {}
 
-    df_2025 = df[period_mask(df)].copy()  # current period: H1 2026 (to as-of date)
+    df_2025 = df[period_mask(df)].copy()  # current period, to the as-of date
 
     # As-of date = latest publish date in the current window. Year-over-year
-    # comparisons use the SAME elapsed window in prior years, so a partial half
-    # is never measured against a full one. Once the window closes (Jun 30) the
-    # same-elapsed window equals the full first half.
+    # comparisons use the SAME elapsed window in prior years, so a partial year
+    # is never measured against a full one. Once the year closes (Dec 31) the
+    # same-elapsed window is the whole calendar year.
     pubs = pd.to_datetime(df_2025["published"], utc=True, errors="coerce").dropna()
     asof = pubs.max() if len(pubs) else PERIOD_START
     stats["asof"] = asof
     stats["asof_label"] = f"{asof:%b} {asof.day}"
-    stats["window_complete"] = (asof.month, asof.day) >= (6, 30)
+    stats["window_complete"] = window_complete(asof)
 
     df_2024 = df[same_elapsed_mask(df, PRIOR_YEAR, asof)]  # same window, prior year
 
@@ -458,33 +467,44 @@ def calculate_stats(df, cvelist_df, full_nvd_df=None, full_cvelist_df=None):
         else 0
     )
 
-    # Per-day pace + two independent full-year projections.
+    # Per-day pace + two straight-line full-year projections. They only matter
+    # in a preview run, before the year closes.
     span_days = max((asof - PERIOD_START).days + 1, 1)
     stats["days_elapsed"] = span_days
     stats["cves_per_day"] = len(df_2025) / span_days if span_days else 0
-    stats["projected_runrate"] = round(stats["cves_per_day"] * 365)
-    # Seasonality-adjusted: scale the estimated full H1 by the prior year's H1
-    # share of its full-year total (CVE publishing is not evenly spread).
-    full_prior = int((df["year"] == PRIOR_YEAR).sum())
-    h1_prior_full = int(half1_mask(df, PRIOR_YEAR).sum())
-    h1_share = (h1_prior_full / full_prior) if full_prior else 0.5
-    stats["h1_share_prior"] = h1_share * 100
-    est_full_h1 = stats["cves_per_day"] * PERIOD_DAYS
-    stats["projected_seasonal"] = round(est_full_h1 / h1_share) if h1_share else 0
+    stats["projected_runrate"] = round(stats["cves_per_day"] * PERIOD_DAYS)
+    # Seasonality-adjusted: divide by the share of the prior year's CVEs that had
+    # published by the same day (CVE publishing is not evenly spread).
+    full_prior = int(prior_period_mask(df).sum())
+    prior_by_asof = int(same_elapsed_mask(df, PRIOR_YEAR, asof).sum())
+    share = (prior_by_asof / full_prior) if full_prior else 1
+    stats["prior_share_by_asof"] = share * 100
+    stats["projected_seasonal"] = round(len(df_2025) / share) if share else 0
     stats["projected_full_year"] = stats["projected_runrate"]  # back-compat
 
     # Human-scale framings for the lead.
     stats["minutes_between"] = (1440 / stats["cves_per_day"]) if stats["cves_per_day"] else 0
-    # Most recent full year whose total is still below this half's count.
+    # The latest year X such that this period's count beats EVERY full year
+    # before X, so "more than any full year before X" is true as written. The
+    # old check took the most recent smaller year, which an earlier, larger year
+    # could contradict.
     fy = df.groupby("year").size()
-    h1_total = stats["total_2025"]
-    exceeds = [
-        y for y in range(TARGET_YEAR - 1, 1998, -1) if int(fy.get(y, 0)) < h1_total
+    stats["exceeds_year"] = None
+    stats["exceeds_year_total"] = 0
+    for x in range(TARGET_YEAR, HIST_MIN_YEAR, -1):
+        before = [int(fy.get(y, 0)) for y in range(HIST_MIN_YEAR, x)]
+        if before and stats["total_2025"] > max(before):
+            stats["exceeds_year"] = x - 1
+            stats["exceeds_year_total"] = int(fy.get(x - 1, 0))
+            break
+    # A record means more than every earlier year over the same elapsed window,
+    # which once the year closes is simply the most CVEs in any calendar year.
+    earlier = [
+        int(same_elapsed_mask(df, y, asof).sum()) for y in range(HIST_MIN_YEAR, TARGET_YEAR)
     ]
-    stats["h1_exceeds_year"] = exceeds[0] if exceeds else None
-    stats["h1_exceeds_year_total"] = int(fy.get(exceeds[0], 0)) if exceeds else 0
+    stats["is_record"] = bool(earlier) and stats["total_2025"] > max(earlier)
 
-    # H1-over-H1 comparison across three years, identical elapsed window each.
+    # Three years side by side, identical elapsed window each.
     cvss_col0 = "cvss_v3" if "cvss_v3" in df.columns else "cvss_v4"
     compare = []
     for y in (TARGET_YEAR - 2, TARGET_YEAR - 1, TARGET_YEAR):
@@ -499,7 +519,7 @@ def calculate_stats(df, cvelist_df, full_nvd_df=None, full_cvelist_df=None):
                 else 0,
             }
         )
-    stats["h1_compare"] = compare
+    stats["compare"] = compare
 
     # Rejected CVE statistics (from full datasets)
     stats["rejected_2025"] = 0
@@ -638,6 +658,50 @@ def calculate_stats(df, cvelist_df, full_nvd_df=None, full_cvelist_df=None):
     return stats
 
 
+def midyear_verdict(total):
+    """One paragraph grading the mid-year call against the year's final count.
+
+    The mid-year post said the year would close nearer MIDYEAR_CALL["my_call"]
+    than CVEForecast's MIDYEAR_CALL["model_forecast"]. Every outcome gets its
+    own wording, including both numbers being low, so the post never claims
+    more than the data shows.
+    """
+    my_call = MIDYEAR_CALL["my_call"]
+    model_call = MIDYEAR_CALL["model_forecast"]
+    d_me, d_model = abs(total - my_call), abs(total - model_call)
+    if total >= model_call:
+        verdict = (
+            f"My model and I were both low, and I was further off: the year finished "
+            f"{total - model_call:,} above the model's number and {total - my_call:,} "
+            "above mine. The second-half surge I put the burden of proof on arrived, "
+            "and then some."
+        )
+    elif d_me < d_model and total <= my_call:
+        verdict = (
+            f"My number was closer, and still too high: the year finished "
+            f"{my_call - total:,} below it. The second-half surge the model needed "
+            "did not come."
+        )
+    elif d_me < d_model:
+        verdict = (
+            f"My number was closer, by {d_model - d_me:,}, but the year still finished "
+            f"{total - my_call:,} above it, so the second half did pick up, though not "
+            "by as much as the model expected."
+        )
+    elif d_model < d_me:
+        verdict = (
+            f"The model was closer, and I was wrong: the year finished {d_me:,} away "
+            f"from my number and {d_model:,} from the model's. The second half "
+            "accelerated the way the forecast expected, and the burden of proof I put "
+            "on the surge was met."
+        )
+    else:
+        verdict = (
+            "It landed exactly halfway between the two, so neither of us gets to claim it."
+        )
+    return verdict
+
+
 # =============================================================================
 # BLOG GENERATION
 # =============================================================================
@@ -681,60 +745,101 @@ def generate_blog(
 
     # Precomputed framing helpers
     kev = kev or {}
-    asof_label = stats.get("asof_label", "Jun 30")
+    label = PERIOD_LABEL
+    asof_label = stats.get("asof_label", "Dec 31")
     complete = stats.get("window_complete", False)
-    window_note = (
-        ""
-        if complete
-        else f" Numbers run through {asof_label}; the window closes June 30, so treat them as a floor."
-    )
+    total = stats["total_2025"]
+    prior_total = stats["total_2024"]
+    yoy = stats["yoy_change"]
+    up_down = "up" if yoy >= 0 else "down"
+    # Before December 31 every comparison is over the same elapsed window.
+    same_window = "" if complete else f" over the same January 1 to {asof_label} window"
     proj_lo = min(stats["projected_runrate"], stats["projected_seasonal"])
     proj_hi = max(stats["projected_runrate"], stats["projected_seasonal"])
-    direction = "an increase" if stats["yoy_change"] > 0 else "a decrease"
-    # Lead-framing helpers
+    is_record = stats.get("is_record", False)
+    cpe = stats["cpe_coverage"]
     kev_in = kev.get("h1_published_in_kev")
-    kev_pct = (kev_in / max(stats["total_2025"], 1) * 100) if kev_in is not None else None
-    exceeds_year = stats.get("h1_exceeds_year")
-    scale_clause = (
-        f", more in six months than any full year before {exceeds_year + 1} "
-        f"(all of {exceeds_year} finished at {stats['h1_exceeds_year_total']:,})"
-        if exceeds_year
-        else ""
-    )
-    if kev_pct is not None:
-        exploit_line = (
-            f" And yet only **{kev_in} of them ({kev_pct:.2f}%)** have made CISA's KEV list "
-            "so far, a floor that will rise as the cohort ages and exploitation is confirmed. "
-            "That gap is the story of 2026 so far: we are minting CVEs faster than ever while confirmed "
-            "exploitation stays rare, so the hard problem is signal-to-noise, not patch volume."
+    kev_pct = (kev_in / max(total, 1) * 100) if kev_in is not None else None
+
+    if complete:
+        opening = (
+            f"{label} set a new record with **{total:,}** published CVEs."
+            if is_record
+            else f"{label} closed with **{total:,}** published CVEs."
+        )
+        opening += (
+            " This review covers everything published from January 1 to December 31: the "
+            "volume, the severity, what is actually being exploited, who is driving the "
+            "numbers, and how my mid-year call held up."
+        )
+        lead = (
+            f"**{label} produced {total:,} CVEs, {up_down} {abs(yoy):.1f}% on "
+            f"{PRIOR_YEAR} ({prior_total:,}).**"
+        )
+        if is_record:
+            lead += " No year since the program began in 1999 has produced more."
+        pace = (
+            f"The all-time catalog now holds **{stats['total_all_time']:,} CVEs** "
+            "published since 1999."
         )
     else:
-        exploit_line = ""
+        opening = (
+            f"This is a preview of the {label} review, built from data through {asof_label}. "
+            f"Every comparison uses the same January 1 to {asof_label} window in earlier "
+            "years, so a partial year is never measured against a full one. The numbers will "
+            "move before December 31, so treat them as a floor."
+        )
+        lead = (
+            f"**Through {asof_label}, {label} has produced {total:,} CVEs, {up_down} "
+            f"{abs(yoy):.1f}% on the same window of {PRIOR_YEAR} ({prior_total:,}).**"
+        )
+        exceeds_year = stats.get("exceeds_year")
+        if exceeds_year:
+            lead += (
+                f" No full year before {exceeds_year + 1} produced as many: all of "
+                f"{exceeds_year} finished at {stats['exceeds_year_total']:,}."
+            )
+        pace = (
+            f"At this pace the year lands near **{proj_lo:,} to {proj_hi:,}**, and the "
+            f"all-time catalog has passed **{stats['total_all_time']:,} CVEs** since 1999."
+        )
+    lead += f" That works out to one new CVE every **{stats['minutes_between']:.1f} minutes**."
+    if kev_pct is not None:
+        lead += (
+            f" Only **{kev_in} of them ({kev_pct:.2f}%)** have made CISA's KEV list so far, "
+            "a floor that will rise as the cohort ages and exploitation is confirmed. "
+        )
+        lead += (
+            "That gap is the story of the year: volume keeps setting records while confirmed "
+            "exploitation stays rare, so the hard problem is signal-to-noise, not patch volume."
+            if is_record
+            else "That gap is the story of the year: confirmed exploitation stays rare next to "
+            "the volume, so the hard problem is signal-to-noise, not patch volume."
+        )
 
     # Severity percentages, guarded against an empty current period so a
     # bad/partial data load degrades to 0% instead of a ZeroDivisionError.
-    _tot = max(stats["total_2025"], 1)
+    _tot = max(total, 1)
     sev_pct = {
         k: stats[k] / _tot * 100 for k in ("critical", "high", "medium", "low")
     }
     crit_high_pct = (stats["critical"] + stats["high"]) / _tot * 100
-    # CVEs with no CVSS severity (the ~6.6% the table would otherwise drop, so
-    # the percentage column sums to 100 instead of silently to ~98%).
+    # CVEs with no CVSS severity, so the percentage column sums to 100.
     _sev_sum = stats["critical"] + stats["high"] + stats["medium"] + stats["low"]
-    sev_unscored = max(stats["total_2025"] - _sev_sum, 0)
+    sev_unscored = max(total - _sev_sum, 0)
     sev_pct["unscored"] = sev_unscored / _tot * 100
 
     blog = f"""# {POST_TITLE}
 
-<!-- Featured image suggestion: graphs/00_scorecard.png (mid-year stat card) or graphs/01_cves_by_year.png (2026 towers over every prior H1) -->
+<!-- Featured image suggestion: graphs/00_scorecard.png (year-in-review stat card) -->
 
-We are halfway through 2026, so it is time for the mid-year CVE check-in. The short version: the volume curve has gone vertical while exploitation has not. This review covers everything published in the first half of 2026 ({PERIOD_RANGE}), the volume, the severity, what is actually being exploited, and who is driving the numbers, all measured against the same elapsed window a year ago so a partial half is never compared to a full one.
+{opening}
 
 ## TL;DR
 
-**The first half of 2026 produced {stats["total_2025"]:,} CVEs{scale_clause}.** That works out to one new CVE every **{stats["minutes_between"]:.1f} minutes**, {direction} of **{abs(stats["yoy_change"]):.1f}%** over the same window in {PRIOR_YEAR} ({stats["total_2024"]:,}).{exploit_line}
+{lead}
 
-At this pace the year projects to roughly **{proj_lo:,} to {proj_hi:,}**, and the all-time catalog has now passed **{stats["total_all_time"]:,} CVEs** since 1999.{window_note}
+{pace}
 
 > **Note**: All statistics in this report exclude rejected CVEs to provide an accurate count of active vulnerabilities.
 
@@ -742,11 +847,13 @@ At this pace the year projects to roughly **{proj_lo:,} to {proj_hi:,}**, and th
 
 | Metric | Value |
 |--------|-------|
-| **Total CVEs (H1 2026)** | **{stats["total_2025"]:,}** |
+| **Total CVEs ({label})** | **{total:,}** |
 | CVEs per Day | {stats["cves_per_day"]:.1f} |
-| Change vs same window {PRIOR_YEAR} | {stats["yoy_change"]:+.1f}% |
-| Projected Full Year | {proj_lo:,} - {proj_hi:,} |
-| Critical Severity | {stats["critical"]:,} |
+| Change vs {PRIOR_YEAR}{"" if complete else " (same window)"} | {yoy:+.1f}% |
+"""
+    if not complete:
+        blog += f"| Projected Full Year | {proj_lo:,} - {proj_hi:,} |\n"
+    blog += f"""| Critical Severity | {stats["critical"]:,} |
 | High Severity | {stats["high"]:,} |
 | Average CVSS Score | {stats["avg_cvss"]:.2f} |
 | CVSS Coverage | {stats["cvss_coverage"]:.1f}% |
@@ -757,55 +864,71 @@ At this pace the year projects to roughly **{proj_lo:,} to {proj_hi:,}**, and th
         blog += f"| Active CNAs | {stats['unique_cnas']:,} |\n"
 
     if stats.get("rejected_2025", 0) > 0:
-        blog += f"| Rejected CVEs (H1 2026) | {stats['rejected_2025']:,} |\n"
+        blog += f"| Rejected CVEs ({label}) | {stats['rejected_2025']:,} |\n"
 
-    if kev.get("h1_published_in_kev") is not None:
-        blog += f"| Already Known-Exploited (KEV) | {kev['h1_published_in_kev']} |\n"
+    if kev_in is not None:
+        blog += f"| Already Known-Exploited (KEV) | {kev_in} |\n"
 
-    # H1-over-H1 comparison table, identical elapsed window each year.
+    # Three years side by side, identical elapsed window each.
     cmp_rows = ""
-    for c in stats.get("h1_compare", []):
-        tag = " *(partial)*" if c["year"] == TARGET_YEAR and not complete else ""
-        cmp_rows += (
-            f"| Jan 1 - {asof_label}, {c['year']}{tag} | {c['total']:,} | "
-            f"{c['per_day']:.1f} | {c['avg_cvss']:.2f} |\n"
-        )
-
-    # Forecast scorecard, reframed: straight-line projections vs the model call.
-    if forecast and forecast.get("full_year_forecast"):
-        fc = forecast["full_year_forecast"]
-        model = forecast.get("model")
-        mape = forecast.get("model_mape")
-        model_note = f" ({model}, MAPE {mape})" if model else ""
-        url = forecast.get("url", "https://cveforecast.org")
-        gap = fc - proj_hi
-        if gap > 0:
-            interp = (
-                f"That is **{gap:,} above** the top of the straight-line range, and here is where I "
-                f"will plant a flag: **I think the model is high.** Both simple extrapolations land "
-                f"near {proj_hi:,}, and the forecast's entire gap to them rests on a heavy second-half "
-                f"surge that still has to show up. **My call is the year closes nearer {proj_hi:,} than "
-                f"{fc:,}.** I will happily eat those words in the December review if H2 accelerates the "
-                f"way the model expects, but the burden of proof is on the surge."
-            )
+    for c in stats.get("compare", []):
+        if complete:
+            window = f"{c['year']}"
         else:
-            interp = "That sits inside the straight-line range, so 2026 is tracking the model."
-        forecast_block = (
-            f"[CVEForecast]({url}), one of my own RogoLabs tools, projects **{fc:,} CVEs** for "
-            f"full-year 2026{model_note}, so I am partly arguing with my own model here. {interp}"
+            tag = " *(partial)*" if c["year"] == TARGET_YEAR else ""
+            window = f"Jan 1 - {asof_label}, {c['year']}{tag}"
+        cmp_rows += (
+            f"| {window} | {c['total']:,} | {c['per_day']:.1f} | {c['avg_cvss']:.2f} |\n"
         )
+    cmp_intro = (
+        "Each year is counted from January 1 to December 31."
+        if complete
+        else (
+            f"To keep the comparison honest while {label} is still open, each year is "
+            f"measured over the identical window (January 1 through {asof_label})."
+        )
+    )
+
+    # Grade the call from the mid-year post, or track it while the year is open.
+    call = MIDYEAR_CALL
+    my_call, model_call = call["my_call"], call["model_forecast"]
+    if complete:
+        verdict = midyear_verdict(total)
+        forecast_section = f"""## Scoring My Mid-Year Call
+
+In my [mid-year check-in]({call["url"]}) I wrote that the year would close nearer **{my_call:,}** than the **{model_call:,}** my own [CVEForecast](https://cveforecast.org) model projected ({call["model"]}, MAPE {call["model_mape"]}). It closed at **{total:,}**.
+
+{verdict}"""
     else:
-        forecast_block = (
-            "_Forecast comparison pending: run `08_forecast_scorecard.py` to pull the latest "
-            "number from [cveforecast.org](https://cveforecast.org)._"
-        )
+        midpoint = (my_call + model_call) / 2
+        settles = "The January review settles it."
+        if proj_lo > model_call:
+            tracking = (
+                f"Both projections are already above even the model's {model_call:,}, "
+                "so my call is not going to hold."
+            )
+            settles = "The January review puts a number on how far off I was."
+        elif proj_hi < midpoint:
+            tracking = "Both projections currently sit closer to my number."
+        elif proj_lo > midpoint:
+            tracking = "Both projections currently sit closer to the model's."
+        else:
+            tracking = "The two projections currently split the difference."
+        model_now = ""
+        if forecast and forecast.get("full_year_forecast"):
+            model_now = f" CVEForecast now projects **{forecast['full_year_forecast']:,}**."
+        forecast_section = f"""## Scorecard: On Pace for What?
+
+At **{stats["cves_per_day"]:.1f} CVEs/day** through {asof_label}, the run-rate extrapolates to **{stats["projected_runrate"]:,}**, and dividing by the share of {PRIOR_YEAR}'s CVEs that had published by the same day ({stats["prior_share_by_asof"]:.0f}%) gives **{stats["projected_seasonal"]:,}**.
+
+In my [mid-year check-in]({call["url"]}) I called the year closing nearer **{my_call:,}** than CVEForecast's **{model_call:,}**. {tracking}{model_now} {settles}"""
 
     # "What changed" callouts vs the same window a year ago.
     changed_bits = []
     movers = stats.get("cna_movers", [])
+    new_cnas = [cna_display(m["name"]) for m in movers if m["status"] == "new"]
     if movers:
         leader = movers[0]
-        new_cnas = [cna_display(m["name"]) for m in movers if m["status"] == "new"]
         lead_txt = (
             f"**{cna_display(leader['name'])}** is the busiest CNA at "
             f"**{leader['count']:,}** assignments"
@@ -827,29 +950,29 @@ At this pace the year projects to roughly **{proj_lo:,} to {proj_hi:,}**, and th
             )
             break
     # Editorial spotlight: OpenClaw, where most CVEs come from third-party
-    # researchers (VulnCheck) rather than the project itself.
+    # researchers rather than the project itself. Review before publishing.
     openclaw_spotlight = ""
     oc = stats.get("openclaw")
     if oc and oc.get("total"):
         share = oc["top_assigner_count"] / max(oc["total"], 1) * 100
+        top_assigner = cna_display(oc["top_assigner"])
+        was = "was" if complete else "is"
         openclaw_spotlight = (
-            "\n\n**Spotlight: OpenClaw.** A project that barely existed a year ago, OpenClaw "
-            "(Peter Steinberger's viral local AI agent, the subject of "
-            "[Lex Fridman Podcast #491](https://www.youtube.com/watch?v=YFjfBk8HI5o)) is already one "
-            f"of the most-reported products of the half with **{oc['total']:,} CVEs**. The striking "
-            f"part is who is doing the reporting: **{oc['top_assigner']} alone assigned "
-            f"{oc['top_assigner_count']:,}** of them ({share:.0f}%), disclosed steadily across the "
-            "half rather than in a single dump. That concentration says more about researcher attention "
-            f"than code quality: {oc['top_assigner']}, whose remit is emerging and exploited-in-the-wild "
-            "threats, is exactly the kind of team that systematically covers a fast-growing new target, "
-            "and concentrated third-party research on a hot AI agent is the coverage you would want. To "
-            "its credit the project embraced the CVE lifecycle itself, issuing advisories through GitHub "
-            "as reports came in. I track its CVEs at [OpenClawCVEs](https://github.com/jgamblin/OpenClawCVEs)."
+            "\n\n**Spotlight: OpenClaw.** OpenClaw (Peter Steinberger's viral local AI agent, "
+            "the subject of [Lex Fridman Podcast #491](https://www.youtube.com/watch?v=YFjfBk8HI5o)) "
+            f"{was} one of the most-reported products of {label} with **{oc['total']:,} CVEs**. "
+            f"The striking part is who did the reporting: **{top_assigner} alone assigned "
+            f"{oc['top_assigner_count']:,}** of them ({share:.0f}%). That concentration says "
+            f"more about researcher attention than code quality: {top_assigner}, whose remit is "
+            "emerging and exploited-in-the-wild threats, is exactly the kind of team that "
+            "systematically covers a fast-growing new target. To its credit the project "
+            "embraced the CVE lifecycle itself, issuing advisories through GitHub as reports "
+            "came in. I track its CVEs at [OpenClawCVEs](https://github.com/jgamblin/OpenClawCVEs)."
         )
 
     if changed_bits or openclaw_spotlight:
         changed_section = (
-            "## What Changed in H1 2026\n\n"
+            f"## What Changed in {label}\n\n"
             + " ".join(changed_bits)
             + openclaw_spotlight
             + "\n\n---\n\n"
@@ -857,33 +980,41 @@ At this pace the year projects to roughly **{proj_lo:,} to {proj_hi:,}**, and th
     else:
         changed_section = ""
 
+    if complete:
+        growth_intro = f"Every year since {HIST_MIN_YEAR}, counted by publish date."
+        if is_record:
+            growth_intro += f" {label} is the tallest bar on the chart."
+    else:
+        growth_intro = (
+            f"To compare like with like while {label} is still open, this chart counts each "
+            f"year from January 1 through {asof_label}."
+        )
+        if is_record:
+            growth_intro += f" On that basis {label} already stands taller than any earlier year."
+
     blog += f"""
 ---
 
-## H1-over-H1: Three Years Side by Side
+## Three Years Side by Side
 
-To keep the comparison honest while 2026 is still in progress, each year is measured over the identical window (January 1 through {asof_label}).
+{cmp_intro}
 
-| Window | CVEs | Per Day | Avg CVSS |
+| {"Year" if complete else "Window"} | CVEs | Per Day | Avg CVSS |
 |--------|------|---------|----------|
 {cmp_rows}
 ---
 
-## Forecast Scorecard: Are We On Pace?
-
-At **{stats["cves_per_day"]:.1f} CVEs/day**, two straight-line methods land close to each other (both are simple extrapolations of the same H1 run, so this is a sanity check, not two truly independent signals): the run-rate extrapolates to **{stats["projected_runrate"]:,}**, and a seasonality-adjusted estimate (scaling the pace across the full half, then dividing by {PRIOR_YEAR}'s {stats["h1_share_prior"]:.0f}% first-half share) to **{stats["projected_seasonal"]:,}**.
-
-{forecast_block}
+{forecast_section}
 
 ---
 
 {changed_section}## Historical CVE Growth
 
-To compare like with like, this chart counts only the first half of every year (January 1 through {asof_label}). On that basis 2026 already stands taller than any prior first half: more CVEs in six months than the same window has ever produced.
+{growth_intro}
 
 {img("01_cves_by_year.png")}
 
-First-half growth has been relentless, and 2026 is **{stats["yoy_change"]:+.1f}%** on the first half of {PRIOR_YEAR}.
+Year over year, {label} is **{yoy:+.1f}%** on {PRIOR_YEAR}{same_window}.
 
 {img("02_yoy_growth.png")}
 
@@ -893,30 +1024,22 @@ Counting full years, the cumulative catalog has now passed **{stats["total_all_t
 
 ---
 
-## Monthly Distribution (H1 2026)
+## Monthly Distribution
 
 """
 
     if peak_month and peak_count:
-        blog += f"""CVE publications varied across the first half of 2026, with **{peak_month}** being the peak month at **{peak_count:,} CVEs**.
+        peak_month_full = datetime.strptime(peak_month, "%b").strftime("%B")
+        blog += f"""Publishing varied across {label}, with **{peak_month_full}** the peak month at **{peak_count:,} CVEs**.
 
-{img("04_h1_monthly.png")}
+{img("04_monthly.png")}
 
 ---
 """
 
     # Day of Week Analysis - drive the framing from the actual peak day.
     if day_stats:
-        _full_day = {
-            "Mon": "Monday",
-            "Tue": "Tuesday",
-            "Wed": "Wednesday",
-            "Thu": "Thursday",
-            "Fri": "Friday",
-            "Sat": "Saturday",
-            "Sun": "Sunday",
-        }
-        peak_day = _full_day.get(day_stats["peak_day"], day_stats["peak_day"])
+        peak_day = _DAY_NAMES.get(day_stats["peak_day"], day_stats["peak_day"])
         peak_dc = day_stats["peak_count"]
         tue = day_stats["tuesday_count"]
         if str(peak_day).lower().startswith("tue"):
@@ -947,7 +1070,7 @@ Weekdays average **{day_stats["weekday_avg"]:,.0f}** CVEs against just **{day_st
     # Top Days
     if top_days and len(top_days) > 0:
         blog += f"""
-## Busiest Days of H1 2026
+## Busiest Days of {label}
 
 Some days saw massive spikes in CVE publications:
 
@@ -965,11 +1088,11 @@ Some days saw massive spikes in CVE publications:
     blog += f"""
 ## CVSS Score Analysis
 
-The Common Vulnerability Scoring System (CVSS) helps standardize severity assessments. Here's how H1 2026 CVEs were distributed across the scoring range.
+The Common Vulnerability Scoring System (CVSS) helps standardize severity assessments. Here's how {label} CVEs were distributed across the scoring range.
 
 {img("05_cvss_distribution.png")}
 
-The **average CVSS score for H1 2026 was {stats["avg_cvss"]:.2f}**, with a **median of {stats["median_cvss"]:.2f}**.
+The **average CVSS score for {label} was {stats["avg_cvss"]:.2f}**, with a **median of {stats["median_cvss"]:.2f}**.
 
 ### Severity Breakdown
 
@@ -981,7 +1104,7 @@ The **average CVSS score for H1 2026 was {stats["avg_cvss"]:.2f}**, with a **med
 | Low | {stats["low"]:,} | {sev_pct["low"]:.1f}% |
 | Unscored | {sev_unscored:,} | {sev_pct["unscored"]:.1f}% |
 
-Percentages are of all H1 2026 CVEs; "Unscored" are the {sev_pct["unscored"]:.1f}% with no CVSS severity assigned.
+Percentages are of all {label} CVEs; "Unscored" are the {sev_pct["unscored"]:.1f}% with no CVSS severity assigned.
 
 {img("06_severity_breakdown.png")}
 
@@ -993,11 +1116,11 @@ Percentages are of all H1 2026 CVEs; "Unscored" are the {sev_pct["unscored"]:.1f
 
 ## Top Weakness Types (CWE)
 
-The Common Weakness Enumeration (CWE) categorizes the types of security weaknesses. Here are the most prevalent weakness types in H1 2026:
+The Common Weakness Enumeration (CWE) categorizes the types of security weaknesses. Here are the most prevalent weakness types in {label}:
 
 {img("07_top_cwes.png")}
 
-### Top 5 CWEs in H1 2026
+### Top 5 CWEs in {label}
 
 | Rank | CWE | Name | Count |
 |------|-----|------|-------|
@@ -1016,7 +1139,7 @@ The leaderboard increasingly reflects where modern software and modern vulnerabi
 
 {img("08_top_cnas.png")}
 
-### Top 5 CNAs in H1 2026
+### Top 5 CNAs in {label}
 
 | Rank | CNA | CVEs Assigned |
 |------|-----|---------------|
@@ -1026,7 +1149,7 @@ The leaderboard increasingly reflects where modern software and modern vulnerabi
         blog += f"| {i} | {cna_display(cna)} | {count:,} |\n"
 
     if "unique_cnas" in stats:
-        blog += f"\nIn total, **{stats['unique_cnas']} unique CNAs** assigned CVEs in H1 2026.\n"
+        blog += f"\nIn total, **{stats['unique_cnas']} unique CNAs** assigned CVEs in {label}.\n"
 
     blog += f"""
 ---
@@ -1037,7 +1160,7 @@ The vendors with the most CVEs attributed to their products this year (each link
 
 {img("14_top_vendors.png")}
 
-### Top 5 Vendors in H1 2026
+### Top 5 Vendors in {label}
 
 | Rank | Vendor | CVE Count |
 |------|--------|-----------|
@@ -1053,7 +1176,7 @@ The vendors with the most CVEs attributed to their products this year (each link
 
 ## Most Vulnerable Products
 
-Drilling past vendors to specific products, the H1 2026 leaders:
+Drilling past vendors to specific products, the {label} leaders:
 
 {img("18_top_products.png")}
 
@@ -1071,10 +1194,9 @@ Drilling past vendors to specific products, the H1 2026 leaders:
         )
 
     # Known-Exploited Vulnerabilities (CISA KEV)
-    if kev.get("h1_published_in_kev") is not None:
+    if kev_in is not None:
         total_pub = max(kev.get("h1_published_total", 0), 1)
-        in_kev = kev["h1_published_in_kev"]
-        pct = in_kev / total_pub * 100
+        pct = kev_in / total_pub * 100
         added = kev.get("added_h1", 0)
         added_prior = kev.get("added_h1_prior", 0)
         added_dir = (
@@ -1087,9 +1209,9 @@ Drilling past vendors to specific products, the H1 2026 leaders:
 
 ## Known-Exploited Vulnerabilities (CISA KEV)
 
-Volume is the headline, but exploitation is what should actually drive patching. Of the **{kev.get("h1_published_total", 0):,}** CVEs published in H1 2026, only **{in_kev}** ({pct:.2f}%) have shown up in the [CISA KEV catalog]({kev.get("url")}) so far. Treat that as a floor, not a verdict: KEV is a US-government catalog that lags disclosure by months and records only confirmed, observed exploitation, so this share will climb as the 2026 cohort ages. Even so, the signal holds, most CVEs are not known-exploited, so exploitability (KEV plus a forward-looking score like EPSS) beats chasing raw counts.
+Volume is the headline, but exploitation is what should actually drive patching. Of the **{kev.get("h1_published_total", 0):,}** CVEs published in {label}, only **{kev_in}** ({pct:.2f}%) have shown up in the [CISA KEV catalog]({kev.get("url")}) so far. Treat that as a floor, not a verdict: KEV is a US-government catalog that lags disclosure by months and records only confirmed, observed exploitation, so this share will climb as the {label} cohort ages. Even so, the signal holds, most CVEs are not known-exploited, so exploitability (KEV plus a forward-looking score like EPSS) beats chasing raw counts.
 
-Note these are two different populations: the **{in_kev}** above are H1-2026-*published* CVEs already in KEV, while CISA *added* **{added}** entries to KEV during the half ({added_dir} the **{added_prior}** added in the same window of {PRIOR_YEAR}, many of them older CVEs newly exploited), and **{kev.get("ransomware_h1", 0)}** of those additions are tied to known ransomware campaigns.
+Note these are two different populations: the **{kev_in}** above are {label}-*published* CVEs already in KEV, while CISA *added* **{added}** entries to KEV during the year ({added_dir} the **{added_prior}** added in {PRIOR_YEAR}{same_window}, many of them older CVEs newly exploited), and **{kev.get("ransomware_h1", 0)}** of those additions are tied to known ransomware campaigns.
 """
         ex_rows = ""
         for e in kev.get("examples", [])[:5]:
@@ -1099,11 +1221,11 @@ Note these are two different populations: the **{in_kev}** above are H1-2026-*pu
                 f"{e.get('date_added') or ''} | {'Yes' if e.get('ransomware') else 'No'} |\n"
             )
         if ex_rows:
-            _shown = min(5, in_kev)
+            _shown = min(5, kev_in)
             blog += f"""
-### H1 2026 CVEs Already in KEV
+### {label} CVEs Already in KEV
 
-A sample ({_shown} most recent of {in_kev}):
+A sample ({_shown} most recent of {kev_in}):
 
 | CVE | Vendor | Product | Added | Ransomware |
 |-----|--------|---------|-------|------------|
@@ -1118,15 +1240,15 @@ Not all CVEs have complete metadata. Here's how data quality has evolved over th
 
 {img("09_data_quality.png")}
 
-### H1 2026 Data Quality Metrics
+### {label} Data Quality Metrics
 
 | Metric | Coverage |
 |--------|----------|
 | CVSS Score | {stats["cvss_coverage"]:.1f}% |
 | CWE Classification | {stats["cwe_coverage"]:.1f}% |
-| CPE Identifiers | {stats["cpe_coverage"]:.1f}% |
+| CPE Identifiers | {cpe:.1f}% |
 
-This is where two ideas from the *CVE Decaf* work I did with Jay Jacobs get practical: **actionable data quality** (judge a record by whether it is complete enough to act on, not by abstract completeness) and **data provenance** (knowing which source asserted each field). The CPE gap is the clearest case. At **{stats["cpe_coverage"]:.1f}% CPE coverage**, nearly half of H1 2026 CVEs cannot be automatically matched to a product the day they publish, so for those records the answer to "can I act on this today?" is no, no matter how complete the rest of the entry looks. Scoring each record on its provenance (who supplied it) and on the fields that actually drive action (CPE for asset matching, KEV and EPSS for exploitability) is how you turn the raw feed into a measurable signal-to-noise ratio instead of a flat backlog.
+This is where two ideas from the *CVE Decaf* work I did with Jay Jacobs get practical: **actionable data quality** (judge a record by whether it is complete enough to act on, not by abstract completeness) and **data provenance** (knowing which source asserted each field). The CPE gap is the clearest case. At **{cpe:.1f}% CPE coverage**, {100 - cpe:.0f}% of {label} CVEs cannot be automatically matched to a product the day they publish, so for those records the answer to "can I act on this today?" is no, no matter how complete the rest of the entry looks. Scoring each record on its provenance (who supplied it) and on the fields that actually drive action (CPE for asset matching, KEV and EPSS for exploitability) is how you turn the raw feed into a measurable signal-to-noise ratio instead of a flat backlog.
 
 ---
 
@@ -1139,12 +1261,12 @@ Not all CVE IDs stay active. Some are rejected for duplicates, disputes, or inva
     if rejected_stats:
         blog += f"""{img("10_rejected_cves.png")}
 
-### H1 2026 Rejection Statistics
+### {label} Rejection Statistics
 
 | Metric | Value |
 |--------|-------|
-| Rejected CVEs in H1 2026 | {rejected_stats["rejected_2025"]:,} |
-| H1 2026 Rejection Rate | {rejected_stats["rate_2025"]:.2f}% |
+| Rejected CVEs in {label} | {rejected_stats["rejected_2025"]:,} |
+| {label} Rejection Rate | {rejected_stats["rate_2025"]:.2f}% |
 | Total Rejected (All Time) | {rejected_stats["total_rejected"]:,} |
 
 CVE rejections occur for several reasons:
@@ -1159,24 +1281,62 @@ CVE rejections occur for several reasons:
 
 """
 
-    # Data-driven CWE takeaway (replaces the old "memory safety dominates" line)
-    cwe_names_top = ", ".join(CWE_NAMES.get(c, c) for c, _ in (top_cwes or [])[:4])
-    kev_takeaway = ""
-    if kev.get("h1_published_in_kev") is not None:
-        total_pub = max(kev.get("h1_published_total", 0), 1)
-        kev_pct = kev["h1_published_in_kev"] / total_pub * 100
-        kev_takeaway = (
-            f"\n\n6. **Confirmed exploitation stays rare (so far)**: just {kev['h1_published_in_kev']} of "
-            f"{kev.get('h1_published_total', 0):,} H1 CVEs ({kev_pct:.2f}%) are in CISA KEV today, a floor "
-            f"that rises as the cohort ages. Volume is a triage problem, not a patch-everything problem."
+    # Data-driven takeaways: every claim below is checked against the numbers.
+    top4 = [c for c, _ in (top_cwes or [])[:4]]
+    cwe_names_top = ", ".join(CWE_NAMES.get(c, c) for c in top4)
+    memory = [CWE_NAMES.get(c, c) for c in top4 if c in MEMORY_SAFETY_CWES]
+    if not memory:
+        memory_line = " Memory-safety weaknesses do not make the top four."
+    elif len(memory) == 1:
+        memory_line = f" {memory[0]} is the only memory-safety weakness in the top four."
+    else:
+        memory_line = f" {', '.join(memory)} are the memory-safety weaknesses in the top four."
+
+    if new_cnas:
+        verb = "is" if len(new_cnas) == 1 else "are"
+        cna_takeaway = (
+            f"**The CNA mix shifted**: {', '.join(new_cnas)} {verb} new to the top five "
+            f"since {PRIOR_YEAR}, and platform teams and research CNAs, not the original "
+            "vendors, lead the assigner list."
+        )
+    elif movers:
+        cna_takeaway = (
+            f"**The CNA mix held**: the same five CNAs lead as in {PRIOR_YEAR}, with "
+            "platform teams and research CNAs, not the original vendors, at the top."
+        )
+    else:
+        cna_takeaway = (
+            "**Platforms lead the CNA list**: platform teams and research CNAs, not the "
+            "original vendors, assign the most CVEs."
         )
 
-    # Role-based "what this means" + a forward-looking prediction.
-    if kev.get("h1_published_in_kev") is not None:
-        _kpct = kev["h1_published_in_kev"] / max(stats["total_2025"], 1) * 100
+    if complete:
+        volume_takeaway = (
+            f"**{'A record year' if is_record else 'Volume'}**: {total:,} CVEs, "
+            f"{up_down} {abs(yoy):.1f}% on {PRIOR_YEAR}."
+        )
+    else:
+        volume_takeaway = (
+            f"**Volume**: {total:,} CVEs through {asof_label}, {up_down} {abs(yoy):.1f}% on "
+            f"the same window last year, with the full year projecting to {proj_lo:,}-{proj_hi:,}."
+        )
+
+    kev_takeaway = ""
+    if kev_in is not None:
+        total_pub = max(kev.get("h1_published_total", 0), 1)
+        kev_pct_pub = kev_in / total_pub * 100
+        kev_takeaway = (
+            f"\n\n6. **Confirmed exploitation stays rare (so far)**: just {kev_in} of "
+            f"{kev.get('h1_published_total', 0):,} {label} CVEs ({kev_pct_pub:.2f}%) are in CISA "
+            "KEV today, a floor that rises as the cohort ages. Volume is a triage problem, not "
+            "a patch-everything problem."
+        )
+
+    # Role-based "what this means".
+    if kev_in is not None:
         defender_line = (
-            f"- **If you defend a network:** do not let the raw count set your pace. Only **{_kpct:.2f}%** of "
-            f"H1 CVEs are confirmed-exploited in KEV today, but KEV lags and is a floor, not the full risk "
+            f"- **If you defend a network:** do not let the raw count set your pace. Only **{kev_pct:.2f}%** of "
+            f"{label} CVEs are confirmed-exploited in KEV today, but KEV lags and is a floor, not the full risk "
             f"picture. Lead with exploitability (KEV as a hard floor, EPSS with a threshold you pick), then "
             f"weight by your own context: internet-facing and sensitive systems jump the queue regardless of "
             f"score, and compliance SLAs (PCI, FedRAMP, and the like) still set hard clocks. Lower priority is "
@@ -1194,41 +1354,42 @@ CVE rejections occur for several reasons:
         "CNAs. Volume reflects scope, not padding; the differentiator that is still genuinely uneven is data "
         "quality, and the biggest gap, CPE coverage, is largely an NVD-side enrichment problem rather than a "
         "function of who assigned the CVE.\n"
-        + f"- **If you consume NVD data:** enrichment is the bottleneck. CPE at {stats['cpe_coverage']:.1f}% "
-        "means nearly half of new CVEs lack a formal CPE, which complicates NVD-style automated matching "
-        "(many CNAs still carry vendor/product strings), and volume only widens that gap.\n"
+        + f"- **If you consume NVD data:** enrichment is the bottleneck. CPE at {cpe:.1f}% "
+        f"means {100 - cpe:.0f}% of new CVEs lack a formal CPE, which complicates NVD-style automated "
+        "matching (many CNAs still carry vendor/product strings), and volume only widens that gap.\n"
     )
-    if forecast and forecast.get("full_year_forecast"):
+
+    if complete:
+        watching_title = f"What I'm watching in {TARGET_YEAR + 1}"
         watching = (
-            f"My call from the scorecard stands: 2026 closes nearer **{proj_hi:,}** than the "
-            f"**{forecast['full_year_forecast']:,}** forecast. Two things would change my mind: a "
-            f"December disclosure surge bigger than {PRIOR_YEAR}'s, or another OpenClaw-style project "
-            "flooding the catalog. The year-end review settles it."
+            f"{TARGET_YEAR + 1} starts from a base of **{stats['cves_per_day']:.0f} CVEs a day**, "
+            "and the mid-year check-in in July will show whether that pace holds."
         )
     else:
+        watching_title = "What I'm watching before December 31"
         watching = (
-            f"The straight-line pace points to roughly **{proj_lo:,} to {proj_hi:,}** for the year. "
-            "The year-end review settles it."
+            f"Whether the pace holds: the projections above put the year at {proj_lo:,} to "
+            f"{proj_hi:,}, and the January review settles my mid-year call."
         )
 
     blog += f"""---
 
 ## Conclusions
 
-### Key Takeaways from the First Half of 2026
+### Key Takeaways from {label}
 
-1. **Volume keeps climbing**: {stats["total_2025"]:,} CVEs in roughly six months, {"up" if stats["yoy_change"] > 0 else "down"} {abs(stats["yoy_change"]):.1f}% on the same window last year, with the full year projecting to {proj_lo:,}-{proj_hi:,}.
+1. {volume_takeaway}
 
 2. **Severity stays heavy**: {stats["critical"] + stats["high"]:,} CVEs ({crit_high_pct:.1f}%) are Critical or High.
 
-3. **Web and access-control flaws lead**: {cwe_names_top} headline the CWE list. Memory-safety issues barely register in the top tier this half.
+3. **The top weaknesses**: {cwe_names_top} lead the CWE list.{memory_line}
 
-4. **The CNA mix is shifting**: platform teams and aggregators, not the original vendors, now top the assigner list, and the lineup reshuffled from a year ago.
+4. {cna_takeaway}
 
-5. **Coverage gaps persist**: CVSS and CWE are well covered, but CPE sits at {stats["cpe_coverage"]:.1f}%, which still hampers automated matching.{kev_takeaway}
+5. **Coverage gaps persist**: CVSS and CWE are well covered, but CPE sits at {cpe:.1f}%, which still hampers automated matching.{kev_takeaway}
 
 {role_section}
-### What I'm watching in H2
+### {watching_title}
 
 {watching}
 
@@ -1240,10 +1401,10 @@ Two primary data sources, plus two enrichment feeds:
 
 1. **NVD JSON** - National Vulnerability Database export from [nvd.handsonhacking.org](https://nvd.handsonhacking.org/nvd.json)
 2. **CVE List V5** - Official CVE records from [CVEProject/cvelistV5](https://github.com/CVEProject/cvelistV5)
-3. **Forecast** - [CVEForecast](https://cveforecast.org) full-year projection
+3. **Forecast** - my [mid-year call]({call["url"]}) and [CVEForecast](https://cveforecast.org)
 4. **Exploitation** - [CISA KEV catalog](https://www.cisa.gov/known-exploited-vulnerabilities-catalog)
 
-Everything here is reproducible. The full pipeline (Python, pandas, matplotlib) is on GitHub at [jgamblin/H12026CVEBlog](https://github.com/jgamblin/H12026CVEBlog), and it leans on the free CVE tooling I build at [RogoLabs](https://rogolabs.net): [cve.icu](https://cve.icu), [cnascorecard.org](https://cnascorecard.org), and [cveforecast.org](https://cveforecast.org).
+Everything here is reproducible. The full pipeline (Python, pandas, matplotlib) is on GitHub at [{REPO}](https://github.com/{REPO}), and it leans on the free CVE tooling I build at [RogoLabs](https://rogolabs.net): [cve.icu](https://cve.icu), [cnascorecard.org](https://cnascorecard.org), and [cveforecast.org](https://cveforecast.org).
 
 *Data collected and analyzed on {current_date}.*
 
@@ -1296,7 +1457,7 @@ def main():
     if kev_path.exists():
         with open(kev_path) as f:
             kev = json.load(f)
-        print(f"  ✓ Loaded KEV: {kev.get('h1_published_in_kev')} H1 CVEs already exploited")
+        print(f"  ✓ Loaded KEV: {kev.get('h1_published_in_kev')} {PERIOD_LABEL} CVEs already exploited")
 
     # Load data (returns both filtered and full datasets)
     nvd_df, cvelist_df, full_nvd_df, full_cvelist_df = load_data()
@@ -1335,14 +1496,15 @@ def main():
     # Generate all graphs using imported functions from 03_generate_graphs.py
     print("\nGenerating graphs...")
 
-    # First-Half CVEs by Year - returns (fig, h1_yearly) for the YoY chart
+    # CVEs by Year over the same elapsed window - returns (fig, yearly) for the
+    # YoY chart. Once the year closes this is simply CVEs per calendar year.
     asof = current_asof(df)
-    _, h1_yearly = graph_cves_by_year(
+    _, window_yearly = graph_cves_by_year(
         df, asof, save_path=GRAPHS_DIR / "01_cves_by_year.png"
     )
 
-    # First-Half YoY Growth (derived from the H1 series)
-    graph_yoy_growth(h1_yearly, save_path=GRAPHS_DIR / "02_yoy_growth.png")
+    # YoY Growth (derived from the same-window series)
+    graph_yoy_growth(window_yearly, save_path=GRAPHS_DIR / "02_yoy_growth.png")
 
     # Cumulative Growth uses the TRUE full-year totals (all-time catalog size)
     yearly_full = df.groupby("year").size().reset_index(name="count")
@@ -1353,9 +1515,9 @@ def main():
         yearly_full, save_path=GRAPHS_DIR / "03_cumulative_growth.png"
     )
 
-    # H1 Monthly - returns (fig, peak_month, peak_count)
+    # Monthly - returns (fig, peak_month, peak_count)
     _, peak_month, peak_count = graph_period_monthly(
-        df, save_path=GRAPHS_DIR / "04_h1_monthly.png"
+        df, save_path=GRAPHS_DIR / "04_monthly.png"
     )
 
     # CVSS Distribution
@@ -1422,18 +1584,28 @@ def main():
         if kev and kev.get("h1_published_in_kev") is not None
         else "n/a"
     )
+    complete = stats["window_complete"]
+    fifth_tile = (
+        (f"{stats['avg_cvss']:.2f}", "average CVSS", False)
+        if complete
+        else (f"{round(proj_lo / 1000)}-{round(proj_hi / 1000)}K", "projected full year", False)
+    )
     scorecard_tiles = [
-        (f"{stats['total_2025']:,}", "CVEs in H1 2026", True),
+        (f"{stats['total_2025']:,}", f"CVEs in {PERIOD_LABEL}", True),
         (f"{stats['cves_per_day']:.0f}/day", f"1 every {stats['minutes_between']:.0f} min", False),
-        (f"+{stats['yoy_change']:.0f}%", f"vs H1 {PRIOR_YEAR} (same window)", False),
+        (
+            f"{stats['yoy_change']:+.0f}%",
+            f"vs {PRIOR_YEAR}" + ("" if complete else " (same window)"),
+            False,
+        ),
         (kev_txt, "known-exploited (CISA KEV)", True),
-        (f"{round(proj_lo / 1000)}-{round(proj_hi / 1000)}K", "projected full year", False),
+        fifth_tile,
         (str(stats.get("top_cna", "n/a")).split("_")[0], "top CVE issuer", False),
     ]
     graph_scorecard(
         scorecard_tiles,
-        "2026 First Half CVE Data: Mid-Year Scorecard",
-        subtitle=f"January 1 - {stats['asof_label']}, 2026",
+        f"{PERIOD_LABEL} CVE Data: Year in Review" if complete else f"{PERIOD_LABEL} CVE Data: Preview",
+        subtitle=f"January 1 - {stats['asof_label']}, {TARGET_YEAR}",
         save_path=GRAPHS_DIR / "00_scorecard.png",
     )
 

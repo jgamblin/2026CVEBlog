@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Process CVE Data for 2026 First Half CVE Review
+Process CVE Data for the 2026 CVE Data Review
 Parses NVD JSON and CVE V5 List to create analysis-ready dataframes
 """
 
@@ -210,7 +210,7 @@ def parse_nvd_data(nvd_data):
 
             # Parse dates as UTC-aware so they match the UTC reporting-window
             # comparisons in period_config (naive vs aware silently mis-bins
-            # CVEs at the Jun 30 / Jul 1 boundary).
+            # CVEs at the Dec 31 / Jan 1 boundary).
             try:
                 pub_date = pd.to_datetime(published, utc=True)
             except Exception:
@@ -479,7 +479,7 @@ def analyze_cnas(cvelist_df):
 
 def main():
     print("=" * 60)
-    print("2026 First Half CVE Data Processing")
+    print("2026 CVE Data Review - Data Processing")
     print("=" * 60)
 
     # Process NVD data

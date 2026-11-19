@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Unified Style Configuration for 2026 First Half CVE Data Review
+Unified Style Configuration for the 2026 CVE Data Review
 Professional "Journalism" style for publication-ready visualizations
 """
 
@@ -70,6 +70,9 @@ CWE_NAMES = {
     'CWE-125': 'OOB Read',
     'CWE-20': 'Input Validation',
     'CWE-22': 'Path Traversal',
+    'CWE-284': 'Improper Access Control',
+    'CWE-639': 'Authorization Bypass (IDOR)',
+    'CWE-122': 'Heap Overflow',
     'CWE-352': 'CSRF',
     'CWE-78': 'Command Injection',
     'CWE-416': 'Use After Free',

@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """
-Known-Exploited (CISA KEV) analysis for the 2026 First Half CVE Data Review.
+Known-Exploited (CISA KEV) analysis for the 2026 CVE Data Review.
 
-Mid-year readers care most about what is actually being exploited, not just raw
-volume. This step downloads the CISA KEV catalog and cross-references it against
-the H1 2026 CVE set (from processed/), then writes processed/kev.json for the
-blog's "Known-Exploited Vulnerabilities" section.
+Readers care most about what is actually being exploited, not just raw volume.
+This step downloads the CISA KEV catalog and cross-references it against the
+2026 CVE set (from processed/), then writes processed/kev.json for the blog's
+"Known-Exploited Vulnerabilities" section.
+
+The kev.json keys still carry the mid-year pipeline's "h1" names (added_h1,
+h1_published_in_kev and so on). They mean "the reporting period", and are kept
+so 04_generate_blog.py reads them unchanged.
 
 Runs after 02_process_data.py (needs processed/nvd_cves.parquet). The blog step
 renders a placeholder if this file is absent, so it is optional but recommended.
@@ -18,7 +22,15 @@ from pathlib import Path
 import pandas as pd
 import requests
 
-from period_config import period_mask, half1_mask, PERIOD_LABEL, PRIOR_YEAR, TARGET_YEAR
+from period_config import (
+    current_asof,
+    period_mask,
+    same_elapsed_mask,
+    PERIOD_LABEL,
+    PERIOD_TITLE,
+    PRIOR_YEAR,
+    TARGET_YEAR,
+)
 
 OUTPUT_DIR = Path("processed")
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -59,7 +71,7 @@ def is_ransomware(value):
 
 
 def load_h1_cve_ids():
-    """CVE IDs published in the H1 2026 window (active, non-rejected)."""
+    """CVE IDs published in the reporting window (active, non-rejected)."""
     pq = OUTPUT_DIR / "nvd_cves.parquet"
     if not pq.exists():
         return set()
@@ -71,7 +83,7 @@ def load_h1_cve_ids():
 
 def main():
     print("=" * 60)
-    print("CISA KEV Analysis - 2026 First Half Review")
+    print(f"CISA KEV Analysis - {PERIOD_TITLE} Review")
     print("=" * 60)
 
     kev = fetch_kev()
@@ -96,13 +108,14 @@ def main():
     if bad_dates:
         print(f"  WARNING: {bad_dates} KEV entries have an unparseable dateAdded")
 
-    # KEV entries newly catalogued during H1 2026 vs the same window in 2025.
-    added_h1 = kev_df[half1_mask(kev_df.assign(published=kev_df["dateAdded"]), TARGET_YEAR)]
-    added_h1_prior = kev_df[
-        half1_mask(kev_df.assign(published=kev_df["dateAdded"]), PRIOR_YEAR)
-    ]
+    # KEV entries newly catalogued during the period vs the same elapsed window
+    # of the prior year, so a run before Dec 31 compares like with like.
+    by_added = kev_df.assign(published=kev_df["dateAdded"])
+    asof = current_asof(by_added)
+    added_h1 = kev_df[same_elapsed_mask(by_added, TARGET_YEAR, asof)]
+    added_h1_prior = kev_df[same_elapsed_mask(by_added, PRIOR_YEAR, asof)]
 
-    # How many CVEs *published* in H1 2026 are already known-exploited.
+    # How many CVEs *published* in the period are already known-exploited.
     h1_ids = load_h1_cve_ids()
     kev_ids = set(kev_df["cveID"])
     h1_in_kev = sorted(h1_ids & kev_ids)
@@ -114,7 +127,7 @@ def main():
     else:
         ransomware_h1 = added_h1.iloc[0:0]
 
-    # Notable examples: H1-2026-published CVEs that are already in KEV,
+    # Notable examples: CVEs published in the period that are already in KEV,
     # most recent additions first (the blog shows the latest few).
     examples = []
     if h1_in_kev:
@@ -154,10 +167,10 @@ def main():
 
     print(f"\n✓ Wrote {OUTPUT_DIR / 'kev.json'}")
     print(f"  KEV catalog total: {out['catalog_total']:,}")
-    print(f"  Added in {PERIOD_LABEL}: {out['added_h1']:,} (vs {out['added_h1_prior']:,} in H1 {PRIOR_YEAR})")
+    print(f"  Added in {PERIOD_LABEL}: {out['added_h1']:,} (vs {out['added_h1_prior']:,} in {PRIOR_YEAR}, same window)")
     print(f"  Ransomware-linked additions: {out['ransomware_h1']:,}")
     print(
-        f"  H1 2026-published CVEs already in KEV: {out['h1_published_in_kev']:,}"
+        f"  {PERIOD_LABEL}-published CVEs already in KEV: {out['h1_published_in_kev']:,}"
         f" of {out['h1_published_total']:,}"
     )
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Enrich 2026 First Half CVE Data Review Blog with AI-Generated Text
+Enrich the 2026 CVE Data Review Blog with AI-Generated Text
 Uses Google Gemini API to improve and expand blog text while keeping statistics intact.
 """
 
@@ -8,6 +8,8 @@ import os
 import re
 import time
 from pathlib import Path
+
+from period_config import POST_TITLE, PRIOR_YEAR, TARGET_YEAR
 
 
 def _import_genai():
@@ -116,12 +118,11 @@ def should_enhance_section(section):
     return not any(kw in title_lower for kw in skip_keywords)
 
 
-# The EXACT introduction text Jerry wants
-JERRY_INTRO_TEXT = """We are halfway through 2026, and the pace has not let up. The first six months kept the volume climbing while the median CVSS score stayed flat, and the same Jan-to-Jun window a year ago is the only fair yardstick. The story so far is more of what we saw in 2025: web application flaws up front and a wider spread of vendors as vulnerabilities push deeper into the supply chain.
-
-This is exactly why I run RogoLabs. We build free tools like [cve.icu](https://cve.icu) (real-time tracking), [cnascorecard.org](https://cnascorecard.org) (CNA performance), and [cveforecast.org](https://cveforecast.org) (predictive modeling) to keep vulnerability data accessible and usable for the community. A mid-year review is also a chance to grade that forecast against what actually shipped.
-
-The takeaway for engineers has not changed: you can't patch everything. At this volume your only move is to ruthlessly prioritize on exploitability and automate the rest."""
+# The EXACT introduction text Jerry wants, used verbatim in place of the
+# generated opening. The mid-year version described the first six months, so it
+# is cleared for the annual review. Write the 2026 version here before the
+# January run; while it is empty, enrichment keeps the generated opening.
+JERRY_INTRO_TEXT = ""
 
 
 def create_enhancement_prompt(section_title, section_content):
@@ -131,7 +132,7 @@ def create_enhancement_prompt(section_title, section_content):
     is_intro = section_title.lower() in [
         "introduction",
         "intro",
-        "2026 first half cve data review",
+        POST_TITLE.lower(),
         "",
     ]
     intro_instruction = (
@@ -144,17 +145,18 @@ You MUST replace the introduction paragraph(s) with this EXACT text (keep the he
 
 Do NOT modify this text. Use it verbatim.
 """
-        if is_intro
+        if is_intro and JERRY_INTRO_TEXT
         else ""
     )
 
     return f"""You are writing for Senior Security Engineers and CISOs. This is a technical data analysis.
 
 TIME CONTEXT (CRITICAL):
-- It is mid-2026. We are analyzing the FIRST HALF of 2026 (Jan 1 - Jun 30).
-- Comparisons are H1-over-H1: this is versus the same Jan-Jun window in 2025, NOT the full prior year.
-- NEVER refer to '2024' or earlier as "current" or "recent trends".
-- The first half of 2026 is the subject period of this analysis.
+- It is January {TARGET_YEAR + 1}. We are analyzing the full year {TARGET_YEAR} (Jan 1 - Dec 31).
+- Comparisons are year over year: {TARGET_YEAR} versus the full year {PRIOR_YEAR}.
+- NEVER refer to '{PRIOR_YEAR - 1}' or earlier as "current" or "recent trends".
+- {TARGET_YEAR} is the subject period of this analysis.
+- NEVER use em dashes or en dashes. Use a colon, a full stop, or parentheses.
 
 AUDIENCE RULE (CRITICAL):
 - NEVER define 'CVE', 'vulnerability', 'patch', 'zero-day', or 'exploit'. Your readers know these terms.
@@ -264,7 +266,7 @@ YOUR VOICE:
 Create an executive summary that:
 1. Opens with the key finding immediately (no generic intros)
 2. Uses personal voice ('I analyzed...', 'We see that...')
-3. Highlights the most important H1 2026 data points
+3. Highlights the most important {TARGET_YEAR} data points
 4. Maintains all original statistics EXACTLY
 5. Does NOT expand beyond 15% of original length
 6. Links CWEs to https://cwe.mitre.org/data/definitions/{{number}}.html
@@ -302,7 +304,7 @@ Current conclusions section:
 
 Enhance the conclusions to:
 1. Summarize key findings in personal voice
-2. Add 2-3 forward-looking predictions for the second half of 2026 based on H1 trends
+2. Add 2-3 forward-looking predictions for {TARGET_YEAR + 1} based on the {TARGET_YEAR} data
 3. Provide actionable insights for security teams
 4. Keep all original statistics intact
 5. Do NOT expand beyond 15% of original length
@@ -323,7 +325,7 @@ Write enhanced conclusions in markdown:"""
 
 def main():
     print("=" * 60)
-    print("2026 First Half CVE Blog Enrichment with Gemini AI")
+    print(f"{POST_TITLE} Enrichment with Gemini AI")
     print("=" * 60)
 
     # Optional Gemini SDK (imported lazily so the rest of the module loads

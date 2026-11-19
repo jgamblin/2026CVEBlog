@@ -64,7 +64,7 @@ def test_every_chart_in_the_post_has_alt_text():
     alt = alt_text()
     for name in [
         "01_cves_by_year.png", "02_yoy_growth.png", "03_cumulative_growth.png",
-        "04_h1_monthly.png", "05_cvss_distribution.png", "06_severity_breakdown.png",
+        "04_monthly.png", "05_cvss_distribution.png", "06_severity_breakdown.png",
         "07_top_cwes.png", "08_top_cnas.png", "09_data_quality.png",
         "10_rejected_cves.png", "13_cvss_by_year.png", "14_top_vendors.png",
         "16_day_of_week.png", "17_top_days.png", "18_top_products.png",
@@ -75,8 +75,10 @@ def test_every_chart_in_the_post_has_alt_text():
 
 def test_alt_text_states_the_numbers():
     alt = alt_text()
-    assert alt["02_yoy_growth.png"].endswith("down 2.5% on the first half of 2025")
-    assert "peaking in June at 7,454" in alt["04_h1_monthly.png"]
+    assert alt["02_yoy_growth.png"].endswith("down 2.5% on 2025")
+    assert "peaking in June at 7,454" in alt["04_monthly.png"]
+    assert alt["01_cves_by_year.png"].startswith("Bar chart of CVEs published each year since 1999")
+    assert "first half" not in " ".join(alt.values()).lower()
     assert "Unscored 641" in alt["06_severity_breakdown.png"]
     assert "CWE-79 (XSS) 3,710" in alt["07_top_cwes.png"]
     assert "CWE-22" not in alt["07_top_cwes.png"]  # top three only
@@ -103,3 +105,13 @@ def test_citation_block_uses_the_configured_post():
     block = load_generator().citation_block()
     assert block.startswith("> **Cite this analysis**  \n> Gamblin, J. (")
     assert f"*{POST_TITLE}*" in block and block.endswith(POST_URL)
+
+
+def test_midyear_verdict_covers_every_outcome():
+    """The annual post grades the July call (72,008 vs the model's 90,831)."""
+    verdict = load_generator().midyear_verdict
+    assert "both low" in verdict(114000) and "23,169 above the model's" in verdict(114000)
+    assert verdict(70000).startswith("My number was closer, and still too high")
+    assert verdict(75000).startswith("My number was closer, by")
+    assert verdict(88000).startswith("The model was closer, and I was wrong")
+    assert "halfway" in verdict(81419.5)

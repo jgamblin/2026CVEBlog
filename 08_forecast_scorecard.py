@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """
-Forecast Scorecard input for the 2026 First Half CVE Data Review.
+Forecast input for the 2026 CVE Data Review.
 
 Pulls the published CVEForecast feed (cveforecast.org) and writes a small
-normalized ``processed/forecast.json`` that 04_generate_blog.py reads to render
-the "Are We On Pace?" section. This is the mid-year angle the annual review
-can't tell: H1 actuals graded against the full-year forecast.
+normalized ``processed/forecast.json``. Only a preview run (before Dec 31) uses
+it, to show the model's current number next to the pace. The final review
+grades the mid-year call instead, from MIDYEAR_CALL in period_config.py.
 
-The blog step runs fine without this file (it prints a TODO placeholder), so
-this script is optional but recommended before publishing.
+The blog step runs fine without this file, so this script is optional.
 """
 
 import json
@@ -82,7 +81,7 @@ def normalize(data):
 
 def main():
     print("=" * 60)
-    print("CVEForecast Scorecard - 2026 First Half Review")
+    print("CVEForecast Scorecard - 2026 CVE Data Review")
     print("=" * 60)
 
     data = fetch_data()
@@ -99,7 +98,7 @@ def main():
     print(f"  Full-year 2026 forecast (ensemble): {_fmt(forecast['full_year_forecast'])}")
     print(f"  Best model: {forecast['model']} (MAPE {forecast['model_mape']})")
     print(f"  Prior full year (2025): {_fmt(forecast['prior_year_total'])}")
-    print(f"  H1 2026 actual (cumulative): {_fmt(forecast['cumulative_actual_2026'])}")
+    print(f"  2026 actual so far (cumulative): {_fmt(forecast['cumulative_actual_2026'])}")
     print("\nThe blog step (04_generate_blog.py) will pick this up automatically.")
 
 

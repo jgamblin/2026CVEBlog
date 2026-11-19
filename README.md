@@ -1,33 +1,45 @@
-# 2026 First Half CVE Data Review
+# 2026 CVE Data Review
 
-[![CI](https://github.com/jgamblin/H12026CVEBlog/actions/workflows/ci.yml/badge.svg)](https://github.com/jgamblin/H12026CVEBlog/actions/workflows/ci.yml)
+[![CI](https://github.com/jgamblin/2026CVEBlog/actions/workflows/ci.yml/badge.svg)](https://github.com/jgamblin/2026CVEBlog/actions/workflows/ci.yml)
 
-Mid-year review of CVE (Common Vulnerabilities and Exposures) data for the first
-half of 2026 (Jan 1 - Jun 30). This project downloads, processes, and visualizes
-CVE data from multiple authoritative sources to produce a publication-ready blog
-post with professional graphs.
+Annual review of CVE (Common Vulnerabilities and Exposures) data for 2026
+(Jan 1 - Dec 31). This project downloads, processes, and visualizes CVE data from
+multiple authoritative sources to produce a publication-ready blog post with
+professional graphs. It publishes on January 1, 2027.
 
-It is a re-scope of the annual [2025CVEBlog](https://github.com/jgamblin/2025CVEBlog)
-pipeline to a half-year date window, with two mid-year additions:
+It starts from the mid-year pipeline,
+[H12026CVEBlog](https://github.com/jgamblin/H12026CVEBlog), retargeted to the full
+year:
 
-- **A real date window** instead of a year equality. All "current period" filters
-  route through `period_config.py` (Jan 1 - Jun 30, 2026).
-- **A Forecast Scorecard.** `08_forecast_scorecard.py` pulls the published
-  [CVEForecast](https://cveforecast.org) feed so the post can grade H1 actuals
-  against the full-year projection.
+- **One date window.** All "current period" filters route through
+  `period_config.py` (Jan 1 - Dec 31, 2026).
+- **Run it before the year closes and it produces a preview.** Every year-over-year
+  figure then uses the same *elapsed* window (Jan 1 through the as-of date), the
+  post says it is a preview, and it shows the full-year projections. On the run
+  after December 31 the same code writes the final review.
+- **The mid-year call gets graded.** The July post said the year would close nearer
+  72,008 than CVEForecast's 90,831. Those numbers live in `MIDYEAR_CALL` in
+  `period_config.py`, and the final post scores them against the actual count,
+  whichever way it goes.
 - **A Known-Exploited (KEV) section.** `09_kev_analysis.py` cross-references the
-  CISA KEV catalog against the H1 CVE set, so the post leads with exploitation, not
-  just volume.
-- **Apples-to-apples comparisons.** Every year-over-year figure uses the same
-  *elapsed* window (Jan 1 through the as-of date), so a partial half is never measured
-  against a full one. The current year is shown as a partial bar and excluded from the
-  year-over-year chart.
+  CISA KEV catalog against the year's CVEs, so the post leads with exploitation,
+  not just volume.
+
+### Before the January 1 run
+
+- Create the `jgamblin/2026CVEBlog` repository on GitHub: the post links to it.
+- Read the OpenClaw spotlight in `04_generate_blog.py`. It is editorial, carried
+  over from the mid-year post, and only its numbers are data-driven.
+- If you want the AI enrichment step, write the 2026 intro into
+  `JERRY_INTRO_TEXT` in `05_enrich_blog.py`. It is empty, so enrichment keeps the
+  generated opening.
+- After the post is live, add "The year after: ..." to the 2025 review.
 
 ## Data Sources
 
 1. **NVD JSON** - National Vulnerability Database export from https://nvd.handsonhacking.org/nvd.json
 2. **CVE List V5** - Official CVE records from https://github.com/CVEProject/cvelistV5
-3. **CVEForecast** - Full-year projection feed from https://cveforecast.org
+3. **CVEForecast** - Full-year projection feed from https://cveforecast.org (preview runs only)
 4. **CISA KEV** - Known Exploited Vulnerabilities catalog from https://www.cisa.gov/known-exploited-vulnerabilities-catalog
 
 ## Requirements
@@ -62,12 +74,13 @@ The reporting window is configured in one place, `period_config.py`:
 
 | Setting | Value |
 |---------|-------|
-| Window | Jan 1 - Jun 30, 2026 |
-| Prior comparison | Jan 1 - Jun 30, 2025 (H1-over-H1) |
-| Historical charts | 1999 - 2026 (2026 = partial) |
-| Post slug and date | `cve-mid-year-2026-check-in`, 2026-07-01 |
+| Window | Jan 1 - Dec 31, 2026 |
+| Prior comparison | Jan 1 - Dec 31, 2025 (same elapsed window in a preview) |
+| Historical charts | 1999 - 2026 |
+| Post slug and date | `2026-cve-data-review`, 2027-01-01 |
 | Tags | `cve`, `cve-data-review` |
-| Series line | links the last full-year review and the research page |
+| Series line | links the 2025 review, the mid-year check-in and the research page |
+| Mid-year call | 72,008 (mine) vs 90,831 (CVEForecast), graded in the final post |
 
 To re-target a future period, edit `period_config.py`. The slug and date matter:
 the citation at the foot of the post is built from them, so they have to match

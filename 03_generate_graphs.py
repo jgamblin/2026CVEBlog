@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate Graphs for 2026 First Half CVE Data Review Blog
+Generate Graphs for the 2026 CVE Data Review Blog
 Creates all visualizations for the annual CVE review
 
 All graphing functions return the Figure object for reuse by other scripts.
@@ -28,9 +28,11 @@ from period_config import (
     prior_period_mask,
     same_elapsed_mask,
     current_asof,
+    window_complete,
     PERIOD_START,
     PERIOD_END,
     PERIOD_LABEL,
+    PERIOD_TITLE,
     TARGET_YEAR,
     HIST_MIN_YEAR,
 )
@@ -208,13 +210,14 @@ def normalize_data(df):
 # GRAPH 1: Total CVEs by Year (Historical Growth)
 # =============================================================================
 def graph_cves_by_year(df, asof, save_path=None):
-    """Bar chart of FIRST-HALF CVEs by year (every bar = Jan 1 through ``asof``).
+    """Bar chart of CVEs by year, every bar Jan 1 through ``asof``.
 
-    Measuring every year over the same elapsed window makes the current year a
-    fair, direct comparison instead of a stubby partial bar against full years.
-    Returns (fig, h1_yearly) for reuse by the year-over-year chart.
+    Measuring every year over the same elapsed window makes a partial current
+    year a fair comparison instead of a stubby bar against full years. Once the
+    year closes (asof = Dec 31) every bar is a full calendar year.
+    Returns (fig, yearly) for reuse by the year-over-year chart.
     """
-    print("Generating: First-Half CVEs by Year...")
+    print("Generating: CVEs by Year...")
 
     rows = [
         {"year": y, "count": int(same_elapsed_mask(df, y, asof).sum())}
@@ -239,9 +242,12 @@ def graph_cves_by_year(df, asof, save_path=None):
 
     ax.set_xlabel("Year")
     ax.set_ylabel("Number of CVEs")
-    ax.set_title(
-        f"First-Half CVEs by Year (Jan 1 - {asof:%b %-d}, {HIST_MIN_YEAR}-{TARGET_YEAR})"
-    )
+    if window_complete(asof):
+        ax.set_title(f"CVEs Published by Year ({HIST_MIN_YEAR}-{TARGET_YEAR})")
+    else:
+        ax.set_title(
+            f"CVEs Published Jan 1 - {asof:%b %-d}, by Year ({HIST_MIN_YEAR}-{TARGET_YEAR})"
+        )
 
     ax.yaxis.set_major_formatter(get_thousands_formatter())
     ax.set_xticks(yearly["year"])
@@ -274,12 +280,13 @@ def graph_cves_by_year(df, asof, save_path=None):
 # GRAPH 2: Year-over-Year Growth Rate
 # =============================================================================
 def graph_yoy_growth(yearly_data, save_path=None):
-    """Bar chart of first-half year-over-year growth. Returns fig.
+    """Bar chart of year-over-year growth. Returns fig.
 
-    Input is the first-half series, so each bar is a true H1-over-H1 change and
-    the current year can be shown (it is a complete same-elapsed comparison).
+    Input is the same-elapsed-window series from graph_cves_by_year, so each bar
+    compares like with like and the current year can be shown even before it
+    closes.
     """
-    print("Generating: First-Half Year-over-Year Growth...")
+    print("Generating: Year-over-Year Growth...")
 
     yearly = yearly_data.copy()
     yearly["yoy_change"] = yearly["count"].pct_change() * 100
@@ -302,8 +309,8 @@ def graph_yoy_growth(yearly_data, save_path=None):
     ax.axhline(y=0, color=COLORS["text"], linestyle="-", linewidth=1)
 
     ax.set_xlabel("Year")
-    ax.set_ylabel("First-Half YoY Change (%)")
-    ax.set_title(f"First-Half Year-over-Year Growth Rate (2000-{TARGET_YEAR})")
+    ax.set_ylabel("YoY Change (%)")
+    ax.set_title(f"Year-over-Year Growth in Published CVEs (2000-{TARGET_YEAR})")
 
     ax.set_xticks(yearly["year"])
     ax.set_xticklabels(yearly["year"].astype(int), rotation=45, ha="right")
@@ -442,13 +449,13 @@ def graph_scorecard(tiles, title, subtitle="", save_path=None):
 
 
 # =============================================================================
-# GRAPH 4: H1 2026 Monthly Distribution
+# GRAPH 4: Monthly Distribution
 # =============================================================================
 def graph_period_monthly(df, save_path=None):
     """Bar chart of CVEs per month within the reporting window.
 
     Returns (fig, peak_month, peak_count). Only the months that fall inside the
-    window are plotted (Jan-Jun for an H1 review), so the monthly average is not
+    window are plotted (all twelve for a full year), so the monthly average is not
     diluted by empty future months.
     """
     print(f"Generating: Monthly Distribution ({PERIOD_LABEL})...")
@@ -463,8 +470,13 @@ def graph_period_monthly(df, save_path=None):
         print("  No date column found for monthly analysis")
         return None, None, None
 
-    # Restrict to the months inside the reporting window (Jan-Jun for H1).
-    window_months = list(range(PERIOD_START.month, PERIOD_END.month))
+    # Restrict to the months inside the reporting window. PERIOD_END is the
+    # first instant after the window, so step back a day: for a full year it
+    # is Jan 1 of the next year, and PERIOD_END.month alone would give no months.
+    # Before the window closes, stop at the as-of month so empty future months
+    # do not drag the monthly average down.
+    last = min(PERIOD_END - pd.Timedelta(days=1), current_asof(df))
+    window_months = list(range(PERIOD_START.month, last.month + 1))
     monthly = df_2025.groupby("month").size().reindex(window_months, fill_value=0)
 
     fig, ax = plt.subplots(figsize=FIG_SIZE)
@@ -1473,16 +1485,16 @@ def generate_summary_stats(nvd_df, cvelist_df):
 
     # NOTE: this is a standalone diagnostic artifact (graphs/summary_stats.json);
     # the published blog computes its own numbers in 04_generate_blog.py. The
-    # prior-period figure here uses the FULL prior first half (Jan 1 - Jun 30),
+    # prior-period figure here uses the FULL prior year (Jan 1 - Dec 31),
     # whereas the blog's headline year-over-year uses the same *elapsed* window
     # (Jan 1 through the current as-of date). The two will differ until the
-    # window closes on Jun 30 - that is expected, not a bug. Keys are named by
+    # year closes on Dec 31, which is expected, not a bug. Keys are named by
     # role (current/prior), never by a hard-coded year.
     stats = {
         "_meta": {
             "period_label": PERIOD_LABEL,
-            "current_period": "Jan 1 - Jun 30 of the target year (publish date)",
-            "prior_period": "full Jan 1 - Jun 30 of the prior year",
+            "current_period": "Jan 1 - Dec 31 of the target year (publish date)",
+            "prior_period": "full Jan 1 - Dec 31 of the prior year",
             "note": (
                 "Diagnostic only; not consumed by the blog. Blog YoY uses the "
                 "same-elapsed window and may differ while the period is open."
@@ -1497,8 +1509,8 @@ def generate_summary_stats(nvd_df, cvelist_df):
         stats["nvd"] = {
             "total_all_time": len(nvd_df),
             "total_current_period": len(nvd_cur),
-            "total_prior_period_full_h1": len(nvd_prior),
-            "yoy_change_full_h1": ((len(nvd_cur) - len(nvd_prior)) / len(nvd_prior) * 100)
+            "total_prior_period_full": len(nvd_prior),
+            "yoy_change_full": ((len(nvd_cur) - len(nvd_prior)) / len(nvd_prior) * 100)
             if len(nvd_prior) > 0
             else 0,
             "cvss_v3_coverage": (
@@ -1556,8 +1568,8 @@ def generate_summary_stats(nvd_df, cvelist_df):
         print("\nNVD Data:")
         print(f"  Total CVEs (all time): {stats['nvd']['total_all_time']:,}")
         print(f"  Current period CVEs: {stats['nvd']['total_current_period']:,}")
-        print(f"  Prior full H1 CVEs: {stats['nvd']['total_prior_period_full_h1']:,}")
-        print(f"  YoY Change (full H1): {stats['nvd']['yoy_change_full_h1']:+.1f}%")
+        print(f"  Prior full-year CVEs: {stats['nvd']['total_prior_period_full']:,}")
+        print(f"  YoY Change (full year): {stats['nvd']['yoy_change_full']:+.1f}%")
         print(f"  CVSS Coverage: {stats['nvd']['cvss_v3_coverage']:.1f}%")
         print(f"  CWE Coverage: {stats['nvd']['cwe_coverage']:.1f}%")
         print(f"  Average CVSS: {stats['nvd']['avg_cvss']:.2f}")
@@ -1582,7 +1594,7 @@ def generate_summary_stats(nvd_df, cvelist_df):
 # =============================================================================
 def main():
     print("=" * 60)
-    print("2026 First Half CVE Data Review - Graph Generation")
+    print(f"{PERIOD_TITLE} CVE Data Review - Graph Generation")
     print("=" * 60)
 
     # Load data
@@ -1601,11 +1613,11 @@ def main():
         print(f"\nNVD Data: {len(nvd_df):,} CVEs")
 
         asof = current_asof(nvd_df)
-        # Charts 01/02 use the first-half series; 03 uses the true full-year total.
-        _, h1_yearly = graph_cves_by_year(
+        # Charts 01/02 use the same-elapsed-window series; 03 uses true full-year totals.
+        _, window_yearly = graph_cves_by_year(
             nvd_df, asof, save_path=GRAPHS_DIR / "01_cves_by_year.png"
         )
-        graph_yoy_growth(h1_yearly, save_path=GRAPHS_DIR / "02_yoy_growth.png")
+        graph_yoy_growth(window_yearly, save_path=GRAPHS_DIR / "02_yoy_growth.png")
         yearly_full = nvd_df.groupby("year").size().reset_index(name="count")
         yearly_full = yearly_full[
             (yearly_full["year"] >= HIST_MIN_YEAR)
@@ -1614,7 +1626,7 @@ def main():
         graph_cumulative_growth(
             yearly_full, save_path=GRAPHS_DIR / "03_cumulative_growth.png"
         )
-        graph_period_monthly(nvd_df, save_path=GRAPHS_DIR / "04_h1_monthly.png")
+        graph_period_monthly(nvd_df, save_path=GRAPHS_DIR / "04_monthly.png")
         graph_cvss_distribution(
             nvd_df, save_path=GRAPHS_DIR / "05_cvss_distribution.png"
         )

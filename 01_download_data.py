@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Download CVE Data Sources for the 2026 First Half CVE Review
+Download CVE Data Sources for the 2026 CVE Data Review
 1. NVD JSON from handsonhacking.org (large file ~1GB+)
 2. CVE V5 List from GitHub
 """
@@ -120,17 +120,19 @@ def clone_cvelistv5():
 
     if output_dir.exists():
         print(f"CVE List V5 repository already exists at {output_dir}")
-        print("Pulling latest changes...")
-        # The initial clone is shallow (--depth 1). A plain `git pull` into a
-        # shallow repo can fail or fetch incompletely, which would silently drop
-        # CVEs on the post-July-1 re-run. Convert to full history first (a no-op
-        # if already complete), then fast-forward.
+        print("Fetching the latest commit...")
+        # The clone is shallow (--depth 1), and a plain `git pull` into a
+        # shallow repo can fail or fetch incompletely. The mid-year fix was
+        # `fetch --unshallow`, which downloads the repo's entire history: many
+        # gigabytes the analysis never reads. Only the current tree matters, so
+        # fetch the newest commit at depth 1 and move the checkout to it. That
+        # leaves exactly the current set of CVE records on disk.
         subprocess.run(
-            ["git", "-C", str(output_dir), "fetch", "--unshallow"],
-            check=False,
+            ["git", "-C", str(output_dir), "fetch", "--depth", "1", "origin", "main"],
+            check=True,
         )
         subprocess.run(
-            ["git", "-C", str(output_dir), "pull", "--ff-only"], check=True
+            ["git", "-C", str(output_dir), "reset", "--hard", "FETCH_HEAD"], check=True
         )
         return output_dir
 
@@ -199,7 +201,7 @@ def main():
     args = parser.parse_args()
 
     print("="*50)
-    print("2026 First Half CVE Data Download Script")
+    print("2026 CVE Data Review - Data Download")
     print("="*50)
 
     # Download NVD JSON
